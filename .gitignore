@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.db
+test_tasks.db
+tasks_local.db
+.env
+.DS_Store

@@ -1,0 +1,4 @@
+# Yandex Cloud Function requirements
+ydb>=3.18.0
+requests>=2.31.0
+pydantic>=2.0.0
