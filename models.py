@@ -48,3 +48,5 @@ class IncomingMessage:
     reply_to_text: Optional[str] = None
     reply_to_screenshots: List[str] = field(default_factory=list)
     is_admin: Optional[bool] = None
+    callback_id: Optional[str] = None
+    callback_payload: Optional[str] = None

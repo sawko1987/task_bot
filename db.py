@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import sqlite3
 import uuid
 from datetime import datetime
@@ -236,9 +237,9 @@ class YdbDatabase(BaseDatabase):
 
         def _callee(session):
             # Получаем или инкрементируем счётчик задач для чата
-            query_counter = f"""
+            query_counter = """
                 DECLARE $chat_id AS Utf8;
-                SELECT last_task_number FROM `{self.database}/chat_counters`
+                SELECT last_task_number FROM `chat_counters`
                 WHERE chat_id = $chat_id;
             """
             prep_q = session.prepare(query_counter)
@@ -252,10 +253,10 @@ class YdbDatabase(BaseDatabase):
                 next_number = 1
 
             # Обновляем счётчик
-            query_update_counter = f"""
+            query_update_counter = """
                 DECLARE $chat_id AS Utf8;
                 DECLARE $next_number AS Uint64;
-                UPSERT INTO `{self.database}/chat_counters` (chat_id, last_task_number)
+                UPSERT INTO `chat_counters` (chat_id, last_task_number)
                 VALUES ($chat_id, $next_number);
             """
             prep_up = session.prepare(query_update_counter)
@@ -279,7 +280,7 @@ class YdbDatabase(BaseDatabase):
                 screenshots=screenshots
             )
 
-            query_insert = f"""
+            query_insert = """
                 DECLARE $chat_id AS Utf8;
                 DECLARE $task_number AS Uint64;
                 DECLARE $task_id AS Utf8;
@@ -291,7 +292,7 @@ class YdbDatabase(BaseDatabase):
                 DECLARE $created_at AS Utf8;
                 DECLARE $screenshots_json AS Utf8;
 
-                UPSERT INTO `{self.database}/tasks` (
+                UPSERT INTO `tasks` (
                     chat_id, task_number, task_id, title, description, status,
                     created_by, created_by_name, created_at, screenshots_json
                 ) VALUES (
@@ -321,13 +322,13 @@ class YdbDatabase(BaseDatabase):
         pool = self._get_pool()
 
         def _callee(session):
-            query = f"""
+            query = """
                 DECLARE $chat_id AS Utf8;
                 DECLARE $status AS Utf8;
                 SELECT chat_id, task_number, task_id, title, description, status,
                        created_by, created_by_name, created_at, completed_by, completed_by_name,
                        completed_at, screenshots_json
-                FROM `{self.database}/tasks`
+                FROM `tasks`
                 WHERE chat_id = $chat_id AND status = $status
                 ORDER BY task_number ASC;
             """
@@ -361,13 +362,13 @@ class YdbDatabase(BaseDatabase):
         pool = self._get_pool()
 
         def _callee(session):
-            query = f"""
+            query = """
                 DECLARE $chat_id AS Utf8;
                 DECLARE $task_number AS Uint64;
                 SELECT chat_id, task_number, task_id, title, description, status,
                        created_by, created_by_name, created_at, completed_by, completed_by_name,
                        completed_at, screenshots_json
-                FROM `{self.database}/tasks`
+                FROM `tasks`
                 WHERE chat_id = $chat_id AND task_number = $task_number;
             """
             prep = session.prepare(query)
@@ -407,7 +408,7 @@ class YdbDatabase(BaseDatabase):
         now_iso = datetime.utcnow().isoformat()
 
         def _callee(session):
-            query = f"""
+            query = """
                 DECLARE $chat_id AS Utf8;
                 DECLARE $task_number AS Uint64;
                 DECLARE $status AS Utf8;
@@ -415,7 +416,7 @@ class YdbDatabase(BaseDatabase):
                 DECLARE $completed_by_name AS Utf8;
                 DECLARE $completed_at AS Utf8;
 
-                UPDATE `{self.database}/tasks`
+                UPDATE `tasks`
                 SET status = $status, completed_by = $completed_by, 
                     completed_by_name = $completed_by_name, completed_at = $completed_at
                 WHERE chat_id = $chat_id AND task_number = $task_number;
@@ -446,12 +447,12 @@ class YdbDatabase(BaseDatabase):
         pool = self._get_pool()
 
         def _callee(session):
-            query = f"""
+            query = """
                 DECLARE $chat_id AS Utf8;
                 DECLARE $task_number AS Uint64;
                 DECLARE $screenshots_json AS Utf8;
 
-                UPDATE `{self.database}/tasks`
+                UPDATE `tasks`
                 SET screenshots_json = $screenshots_json
                 WHERE chat_id = $chat_id AND task_number = $task_number;
             """
@@ -470,10 +471,10 @@ class YdbDatabase(BaseDatabase):
 
         def _callee(session):
             # Считаем количество выполненных задач
-            count_q = f"""
+            count_q = """
                 DECLARE $chat_id AS Utf8;
                 DECLARE $status AS Utf8;
-                SELECT COUNT(*) AS cnt FROM `{self.database}/tasks`
+                SELECT COUNT(*) AS cnt FROM `tasks`
                 WHERE chat_id = $chat_id AND status = $status;
             """
             prep_cnt = session.prepare(count_q)
@@ -484,10 +485,10 @@ class YdbDatabase(BaseDatabase):
             cnt = res[0].rows[0]["cnt"] if res[0].rows else 0
 
             if cnt > 0:
-                delete_q = f"""
+                delete_q = """
                     DECLARE $chat_id AS Utf8;
                     DECLARE $status AS Utf8;
-                    DELETE FROM `{self.database}/tasks`
+                    DELETE FROM `tasks`
                     WHERE chat_id = $chat_id AND status = $status;
                 """
                 prep_del = session.prepare(delete_q)
@@ -503,5 +504,8 @@ class YdbDatabase(BaseDatabase):
 
 def get_db() -> BaseDatabase:
     if config.USE_SQLITE or not config.YDB_ENDPOINT:
-        return SqliteDatabase(config.SQLITE_PATH)
+        sqlite_path = config.SQLITE_PATH
+        if os.path.exists("/tmp") and sqlite_path == "tasks_local.db":
+            sqlite_path = "/tmp/tasks_local.db"
+        return SqliteDatabase(sqlite_path)
     return YdbDatabase(config.YDB_ENDPOINT, config.YDB_DATABASE)
