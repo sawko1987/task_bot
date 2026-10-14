@@ -69,9 +69,10 @@ class TaskBot:
                     self._handle_task_info(msg, m.group(1))
 
         except Exception as e:
-            logger.exception(f"Ошибка при обработке команды бота: {e}")
+            err_details = str(e).strip() or repr(e) or e.__class__.__name__
+            logger.exception(f"Ошибка при обработке команды бота: {err_details}")
             err_msg = (
-                f"⚠️ **Ошибка при выполнении:**\n`{e}`\n\n"
+                f"⚠️ **Ошибка при выполнении:**\n`{err_details}`\n\n"
                 f"💡 Если это ошибка базы данных — убедитесь, что в консоли Yandex Cloud в вашей базе YDB выполнен скрипт создания таблиц `schema.sql`."
             )
             self.api.send_message(msg.chat_id, err_msg, reply_to_id=msg.message_id)

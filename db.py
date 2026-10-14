@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import sqlite3
+import urllib.parse
 import uuid
 from datetime import datetime
 from typing import List, Optional
@@ -207,10 +208,59 @@ class YdbDatabase(BaseDatabase):
     через ydb.iam.MetadataUrlCredentials().
     """
     def __init__(self, endpoint: str, database: str):
-        self.endpoint = endpoint
-        self.database = database
+        # Если в endpoint передан URL с параметром ?database=... (как копируется из консоли YDB)
+        if endpoint and ("?" in endpoint or "database=" in endpoint):
+            parsed = urllib.parse.urlparse(endpoint)
+            query_params = urllib.parse.parse_qs(parsed.query)
+            clean_endpoint = f"{parsed.scheme}://{parsed.netloc}"
+            if not database and "database" in query_params:
+                database = query_params["database"][0]
+            endpoint = clean_endpoint
+
+        self.endpoint = (endpoint or "").rstrip("/")
+        self.database = ("/" + database.strip("/")) if database else ""
         self._driver = None
         self._pool = None
+
+    def _init_tables_ydb(self):
+        """Автоматическая проверка и создание таблиц, если они ещё не созданы."""
+        def _callee(session):
+            for table_sql in [
+                """
+                CREATE TABLE IF NOT EXISTS `tasks` (
+                    chat_id Utf8,
+                    task_number Uint64,
+                    task_id Utf8,
+                    title Utf8,
+                    description Utf8,
+                    status Utf8,
+                    created_by Utf8,
+                    created_by_name Utf8,
+                    created_at Utf8,
+                    completed_by Utf8,
+                    completed_by_name Utf8,
+                    completed_at Utf8,
+                    screenshots_json Utf8,
+                    PRIMARY KEY (chat_id, task_number)
+                );
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS `chat_counters` (
+                    chat_id Utf8,
+                    last_task_number Uint64,
+                    PRIMARY KEY (chat_id)
+                );
+                """
+            ]:
+                try:
+                    session.execute_scheme(table_sql)
+                except Exception as e:
+                    logger.info(f"Таблица уже создана или: {e}")
+
+        try:
+            self._pool.retry_operation_sync(_callee)
+        except Exception as e:
+            logger.warning(f"Не удалось выполнить execute_scheme: {e}")
 
     def _get_pool(self):
         if self._pool is None:
@@ -224,11 +274,13 @@ class YdbDatabase(BaseDatabase):
                     credentials=credentials,
                 )
                 self._driver = ydb.Driver(driver_config)
-                self._driver.wait(fail_fast=True, timeout=5)
+                self._driver.wait(fail_fast=True, timeout=10)
                 self._pool = ydb.SessionPool(self._driver)
+                self._init_tables_ydb()
             except Exception as e:
-                logger.error(f"Ошибка подключения к YDB: {e}")
-                raise
+                err_text = str(e).strip() or repr(e) or e.__class__.__name__
+                logger.error(f"Ошибка подключения к YDB ({self.endpoint}, {self.database}): {err_text}")
+                raise RuntimeError(f"YDB connect error ({self.endpoint}): {err_text}") from e
         return self._pool
 
     def create_task(self, chat_id: str, title: str, description: str,
