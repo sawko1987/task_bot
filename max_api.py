@@ -216,6 +216,37 @@ class MaxApiClient:
             logger.error(f"Исключение при вызове MAX send_message: {e}")
             return False
 
+    def edit_message(self, message_id: str, text: str,
+                     buttons: Optional[List[List[Dict[str, Any]]]] = None) -> bool:
+        """
+        Редактирование ранее отправленного сообщения.
+        PUT /messages?message_id={message_id}
+        """
+        if not message_id:
+            return False
+        url = f"{self.base_url}/messages"
+        params = {"message_id": message_id}
+        payload = {
+            "text": text,
+            "format": "markdown",
+        }
+        if buttons:
+            payload["attachments"] = [
+                {
+                    "type": "inline_keyboard",
+                    "payload": {
+                        "buttons": buttons
+                    }
+                }
+            ]
+        try:
+            resp = self.session.put(url, params=params, json=payload, timeout=8)
+            return resp.status_code == 200
+        except Exception as e:
+            logger.warning(f"Ошибка при edit_message ({message_id}): {e}")
+            return False
+
+
     def answer_callback(self, callback_id: str, notification: Optional[str] = None) -> bool:
         """
         Ответ на нажатие callback-кнопки (показывает уведомление или закрывает индикатор).

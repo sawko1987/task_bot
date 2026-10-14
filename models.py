@@ -22,6 +22,7 @@ class Task:
     completed_by_name: Optional[str] = None
     completed_at: Optional[str] = None
     screenshots: List[str] = field(default_factory=list)
+    section: Optional[str] = None
 
     def screenshots_to_json(self) -> str:
         return json.dumps(self.screenshots, ensure_ascii=False)
@@ -34,6 +35,12 @@ class Task:
             return json.loads(raw)
         except Exception:
             return []
+
+@dataclass
+class ChatSection:
+    chat_id: str
+    section_name: str
+    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
 @dataclass
 class IncomingMessage:
