@@ -16,11 +16,26 @@ def handler(event, context):
     try:
         http_method = event.get("httpMethod", "POST")
         if http_method == "GET":
-            # Проверка работоспособности функции
+            # Диагностика подключения к YDB и окружения
+            diag = {
+                "status": "healthy",
+                "service": "max-task-bot",
+                "ydb_endpoint": config.YDB_ENDPOINT,
+                "ydb_database": config.YDB_DATABASE,
+                "has_token": bool(config.MAX_BOT_TOKEN),
+            }
+            try:
+                tasks = bot.db.get_open_tasks("diag_test_chat")
+                diag["ydb_status"] = "connected"
+                diag["diag_tasks_count"] = len(tasks)
+            except Exception as ydb_err:
+                diag["ydb_status"] = "error"
+                diag["ydb_error"] = str(ydb_err)
+
             return {
                 "statusCode": 200,
-                "headers": {"Content-Type": "application/json"},
-                "body": json.dumps({"status": "healthy", "service": "max-task-bot"})
+                "headers": {"Content-Type": "application/json; charset=utf-8"},
+                "body": json.dumps(diag, ensure_ascii=False)
             }
 
         # Получаем тело запроса
