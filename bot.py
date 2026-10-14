@@ -39,14 +39,24 @@ class TaskBot:
                 return
 
             text = msg.text.strip()
-            if not text and not msg.screenshots:
+            # Если нет текста (например, просто файл, стикер или фото без подписи) — бот ничего не делает
+            if not text:
                 return
 
+            is_group = msg.chat_type != "dialog"
+            is_mention = bool(re.match(r"^@\w+", text))
             # Удаляем упоминание бота, если бот вызывается через @bot_name /command
             clean_text = re.sub(r"^@\w+\s*", "", text).strip()
-            command, *args = clean_text.split(maxsplit=1)
-            command = command.lower()
-            arg_text = args[0].strip() if args else ""
+            if not clean_text:
+                return
+
+            # В групповом чате бот реагирует ИСКЛЮЧИТЕЛЬНО на команды с "/" или обращения через @
+            if is_group and not clean_text.startswith("/") and not is_mention:
+                return
+
+            parts = clean_text.split(maxsplit=1)
+            command = parts[0].lower()
+            arg_text = parts[1].strip() if len(parts) > 1 else ""
 
             # Проверяем вызов команд
             if command in ("/start", "/help", "/помощь", "помощь"):

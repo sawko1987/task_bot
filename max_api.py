@@ -130,7 +130,8 @@ class MaxApiClient:
                 att_type = att.get("type", "")
                 payload = att.get("payload") or {}
                 url = payload.get("url") or payload.get("file_url") or att.get("url")
-                if att_type in ("image", "photo", "file") and url:
+                # К скриншотам задачи относим только изображения (image, photo)
+                if att_type in ("image", "photo") and url:
                     screenshots.append(str(url))
             elif isinstance(att, str):
                 screenshots.append(att)
