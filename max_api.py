@@ -140,19 +140,49 @@ class MaxApiClient:
         reply_to_id = None
         reply_to_text = None
         reply_to_screenshots = []
-        link_obj = msg_data.get("link") or msg_data.get("reply_to_message")
+        reply_to_sender_name = None
+        link_obj = (
+            msg_data.get("link")
+            or body_obj.get("link")
+            or msg_data.get("reply_to_message")
+            or body_obj.get("reply_to_message")
+        )
         if link_obj and isinstance(link_obj, dict):
             reply_msg = link_obj.get("message") or link_obj
             reply_body = reply_msg.get("body") or {}
             reply_to_id = str(reply_body.get("mid") or link_obj.get("mid") or reply_msg.get("id") or "")
-            reply_to_text = (reply_body.get("text") or reply_msg.get("text") or "").strip()
-            reply_atts = reply_body.get("attachments") or reply_msg.get("attachments") or []
+            reply_to_text = (reply_body.get("text") or reply_msg.get("text") or link_obj.get("text") or "").strip()
+
+            # Отправитель цитируемого сообщения
+            reply_sender = (
+                reply_msg.get("sender")
+                or reply_msg.get("from")
+                or link_obj.get("sender")
+                or link_obj.get("from")
+                or {}
+            )
+            if isinstance(reply_sender, dict):
+                fname = reply_sender.get("first_name") or reply_sender.get("name") or reply_sender.get("username")
+                lname = reply_sender.get("last_name")
+                if fname and lname:
+                    reply_to_sender_name = f"{fname} {lname}".strip()
+                elif fname:
+                    reply_to_sender_name = str(fname).strip()
+
+            reply_atts = (
+                reply_body.get("attachments")
+                or reply_msg.get("attachments")
+                or link_obj.get("attachments")
+                or []
+            )
             for att in reply_atts:
                 if isinstance(att, dict):
                     payload = att.get("payload") or {}
                     url = payload.get("url") or payload.get("file_url") or att.get("url")
                     if url:
                         reply_to_screenshots.append(str(url))
+                elif isinstance(att, str):
+                    reply_to_screenshots.append(att)
 
         return IncomingMessage(
             message_id=message_id,
@@ -165,6 +195,7 @@ class MaxApiClient:
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
             reply_to_screenshots=reply_to_screenshots,
+            reply_to_sender_name=reply_to_sender_name,
             is_admin=is_admin_flag
         )
 

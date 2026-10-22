@@ -164,20 +164,55 @@ class TaskBot:
             is_group = msg.chat_type != "dialog"
             is_mention = bool(re.match(r"^@\w+", text))
             clean_text = re.sub(r"^@\w+\s*", "", text).strip()
+            is_reply = bool(msg.reply_to_message_id or msg.reply_to_text or msg.reply_to_screenshots)
 
-            # В групповом чате без состояния реагируем на команды с "/" или обращения через @
+            # В групповом чате без состояния FSM реагируем на:
+            # 1. Команды с "/" (например, /task, /done, /attach, /1)
+            # 2. Обращения к боту через @ (например, @bot задача, @bot /tasks)
+            # 3. Сообщения-ответы (reply) на сообщения с командами управления задачами
             if is_group and not clean_text.startswith("/") and not is_mention:
-                return
+                if not is_reply:
+                    return
+                # Проверяем, содержит ли ответ ключевые слова задач
+                low = clean_text.lower()
+                is_recognized_reply = (
+                    low in ("+", "задача", "в задачу", "к задаче", "готово", "выполнено", "инфо")
+                    or low.startswith(("+ ", "задача ", "в задачу ", "к задаче ", "добавить в задачу ", "добавить ", "прикрепить "))
+                    or bool(re.match(r"^(?:в\s*задачу|к\s*задаче|добавить|\+)\s+\d+", low))
+                )
+                if not is_recognized_reply:
+                    return
+
+            # Нормализация естественных текстовых команд при ответе на сообщение
+            if is_reply:
+                low = clean_text.lower()
+                m_to_task = re.match(r"^(?:в\s*задачу|к\s*задаче|добавить\s*в\s*задачу|добавить|\+)\s+(\d+)(.*)$", clean_text, re.IGNORECASE)
+                if m_to_task:
+                    num = m_to_task.group(1)
+                    rest = m_to_task.group(2).strip()
+                    clean_text = f"/add_to {num} {rest}".strip()
+                elif low in ("+", "задача", "в задачу", "сделать задачей", "в задачи"):
+                    clean_text = "/task"
+                elif low.startswith("задача "):
+                    clean_text = "/task " + clean_text[7:].strip()
+                elif low.startswith("в задачу "):
+                    clean_text = "/task " + clean_text[9:].strip()
+                elif low in ("готово", "выполнено"):
+                    clean_text = "/done"
+                elif low in ("инфо", "подробнее"):
+                    clean_text = "/info"
 
             parts = clean_text.split(maxsplit=1)
             command = parts[0].lower()
             arg_text = parts[1].strip() if len(parts) > 1 else ""
 
-            # 3. ТЕКСТОВЫЕ КОМАНДЫ (ДЛЯ ОБРАТНОЙ СОВМЕСТИМОСТИ)
+            # 3. ТЕКСТОВЫЕ КОМАНДЫ (ДЛЯ ОБРАТНОЙ СОВМЕСТИМОСТИ И БЫСТРОГО ВВОДА)
             if command in ("/start", "/help", "/помощь", "помощь", "/menu", "/меню"):
                 self._handle_main_menu(msg)
-            elif command in ("/task", "/add", "/задача", "/новое"):
+            elif command in ("/task", "/add", "/задача", "/новое", "/todo"):
                 self._handle_add_task_cmd(msg, arg_text)
+            elif command in ("/add_to", "/в_задачу", "/к_задаче", "/append", "/добавить_в"):
+                self._handle_add_to_cmd(msg, arg_text)
             elif command in ("/bulk", "/mass_task", "/массово", "/чеклист", "/checklist", "/tasks_bulk"):
                 self._handle_bulk_tasks_cmd(msg, arg_text)
             elif command in ("/tasks", "/list", "/список", "/задачи", "задачи"):
@@ -186,7 +221,7 @@ class TaskBot:
                 self._handle_mark_done_cmd(msg, arg_text)
             elif command in ("/info", "/инфо", "/подробнее"):
                 self._handle_task_info_cmd(msg, arg_text)
-            elif command in ("/attach", "/скриншот", "/фото"):
+            elif command in ("/attach", "/скриншот", "/фото", "/прикрепить"):
                 self._handle_attach_cmd(msg, arg_text)
             elif command in ("/clear_done", "/очистить", "/удалить_выполненные"):
                 self._handle_clear_done_cmd(msg)
@@ -1124,43 +1159,86 @@ class TaskBot:
             self.api.send_message(msg.chat_id, "⛔ Добавлять задачи могут только администраторы чата.", reply_to_id=msg.message_id)
             return
 
+        is_reply = bool(msg.reply_to_message_id or msg.reply_to_text or msg.reply_to_screenshots)
+
+        # Если в ответе на сообщение передан номер задачи (например, "/task 5" или "/task 5 примечание"),
+        # перенаправляем в добавление к существующей задаче!
+        if is_reply and task_content:
+            m_num = re.match(r"^(\d+)(?:\s+(.*))?$", task_content)
+            if m_num:
+                self._handle_add_to_cmd(msg, task_content)
+                return
+
         screenshots = list(msg.screenshots)
         if msg.reply_to_screenshots:
-            screenshots.extend(msg.reply_to_screenshots)
-
-        if not task_content and msg.reply_to_text:
-            task_content = msg.reply_to_text
-
-        if not task_content and not screenshots:
-            self._btn_start_new_task(msg)
-            return
+            for s in msg.reply_to_screenshots:
+                if s not in screenshots:
+                    screenshots.append(s)
 
         section = None
         clean_content = task_content
         sections = self.db.get_sections(msg.chat_id)
         sec_map = {s.lower(): s for s in sections}
 
-        m_sec = re.match(r"^\[([a-zA-Zа-яА-ЯёЁ0-9_\-\s]+)\]\s*(.*)$", task_content)
-        if m_sec:
-            cand = m_sec.group(1).strip()
-            if cand.lower() in sec_map:
-                section = sec_map[cand.lower()]
-                clean_content = m_sec.group(2).strip()
-            elif len(sections) < 3 and len(cand) <= 30:
-                self.db.add_section(msg.chat_id, cand)
-                section = cand
-                clean_content = m_sec.group(2).strip()
-        else:
-            m_colon = re.match(r"^([a-zA-Zа-яА-ЯёЁ0-9_\-\s]{2,20}):\s*(.+)$", task_content)
-            if m_colon and m_colon.group(1).lower() in sec_map:
-                section = sec_map[m_colon.group(1).lower()]
-                clean_content = m_colon.group(2).strip()
+        if task_content:
+            m_sec = re.match(r"^\[([a-zA-Zа-яА-ЯёЁ0-9_\-\s]+)\]\s*(.*)$", task_content)
+            if m_sec:
+                cand = m_sec.group(1).strip()
+                if cand.lower() in sec_map:
+                    section = sec_map[cand.lower()]
+                    clean_content = m_sec.group(2).strip()
+                elif len(sections) < 3 and len(cand) <= 30:
+                    self.db.add_section(msg.chat_id, cand)
+                    section = cand
+                    clean_content = m_sec.group(2).strip()
+            else:
+                m_colon = re.match(r"^([a-zA-Zа-яА-ЯёЁ0-9_\-\s]{2,20}):\s*(.+)$", task_content)
+                if m_colon and m_colon.group(1).lower() in sec_map:
+                    section = sec_map[m_colon.group(1).lower()]
+                    clean_content = m_colon.group(2).strip()
 
-        title = clean_content if clean_content else "Задача со скриншотом"
+        # Формирование заголовка и описания задачи
+        title = ""
+        description = ""
+
+        if clean_content:
+            # Пользователь ввел свой заголовок в команде
+            title = clean_content
+            if msg.reply_to_text:
+                sender_info = f" (от {msg.reply_to_sender_name})" if msg.reply_to_sender_name else ""
+                description = f"{clean_content}\n\n💬 Пересланное сообщение{sender_info}:\n{msg.reply_to_text}"
+            else:
+                description = clean_content
+        elif msg.reply_to_text:
+            # Текст берется полностью из цитируемого сообщения
+            full_text = msg.reply_to_text
+            first_line = full_text.split("\n", 1)[0].strip()
+            m_sec_in_msg = re.match(r"^\[([a-zA-Zа-яА-ЯёЁ0-9_\-\s]+)\]\s*(.*)$", first_line)
+            if not section and m_sec_in_msg:
+                cand = m_sec_in_msg.group(1).strip()
+                if cand.lower() in sec_map:
+                    section = sec_map[cand.lower()]
+                    first_line = m_sec_in_msg.group(2).strip()
+
+            if len(first_line) > 100:
+                title = first_line[:97] + "..."
+            else:
+                title = first_line or "Задача из сообщения"
+
+            sender_info = f" (от {msg.reply_to_sender_name})" if msg.reply_to_sender_name else ""
+            description = f"💬 Сообщение{sender_info}:\n{full_text}"
+        elif screenshots:
+            title = "Задача со скриншотом"
+            description = "Задача создана со скриншотом"
+
+        if not title and not screenshots:
+            self._btn_start_new_task(msg)
+            return
+
         task = self.db.create_task(
             chat_id=msg.chat_id,
             title=title,
-            description=clean_content,
+            description=description or title,
             created_by=msg.user_id,
             created_by_name=msg.user_name,
             screenshots=screenshots,
@@ -1168,8 +1246,9 @@ class TaskBot:
         )
         sec_str = f"📁 Раздел: **{task.section}**\n" if task.section else ""
         screens_str = f"🖼️ Скриншотов: {len(screenshots)}\n" if screenshots else ""
+        from_msg_str = " из сообщения" if (msg.reply_to_text or msg.reply_to_screenshots) else ""
         reply = (
-            f"✅ **Задача #{task.task_number} создана!**\n\n"
+            f"✅ **Задача #{task.task_number} создана{from_msg_str}!**\n\n"
             f"📌 **{task.title}**\n"
             f"{sec_str}"
             f"👤 Автор: {task.created_by_name}\n"
@@ -1187,12 +1266,113 @@ class TaskBot:
         ]
         self.api.send_message(msg.chat_id, reply, reply_to_id=msg.message_id, buttons=buttons)
 
+    def _handle_add_to_cmd(self, msg: IncomingMessage, arg_text: str):
+        """Добавление пересланного сообщения, текста или фото к существующей задаче."""
+        if not self.api.is_user_admin(msg.chat_id, msg.user_id, msg.is_admin):
+            self.api.send_message(msg.chat_id, "⛔ Добавлять информацию в задачи могут только администраторы чата.", reply_to_id=msg.message_id)
+            return
+
+        # Ищем номер задачи
+        task_num = None
+        extra_note = ""
+        m_num = re.match(r"^(\d+)(?:\s+(.*))?$", arg_text)
+        if m_num:
+            task_num = int(m_num.group(1))
+            extra_note = (m_num.group(2) or "").strip()
+        elif msg.reply_to_text:
+            m_card = re.search(r"#(\d+)", msg.reply_to_text)
+            if m_card:
+                task_num = int(m_card.group(1))
+                extra_note = arg_text.strip()
+
+        if not task_num:
+            self.api.send_message(
+                msg.chat_id,
+                "⚠️ Укажите номер задачи, в которую нужно добавить сообщение.\n"
+                "Пример: ответьте на сообщение командой `/attach 1` или `/add_to 1`",
+                reply_to_id=msg.message_id
+            )
+            return
+
+        task = self.db.get_task_by_number(msg.chat_id, task_num)
+        if not task:
+            self.api.send_message(msg.chat_id, f"❌ Задача #{task_num} не найдена в этом чате.", reply_to_id=msg.message_id)
+            return
+
+        screenshots = list(msg.screenshots)
+        if msg.reply_to_screenshots:
+            for s in msg.reply_to_screenshots:
+                if s not in screenshots:
+                    screenshots.append(s)
+
+        add_parts = []
+        if extra_note:
+            add_parts.append(extra_note)
+        if msg.reply_to_text:
+            sender_info = f" (от {msg.reply_to_sender_name})" if msg.reply_to_sender_name else ""
+            add_parts.append(f"💬 Сообщение{sender_info}:\n{msg.reply_to_text}")
+
+        additional_text = None
+        if add_parts:
+            additional_text = f"📎 Добавлено ({msg.user_name}):\n" + "\n\n".join(add_parts)
+
+        if not additional_text and not screenshots:
+            # Если нет ни текста, ни скриншотов, и команда была просто /attach 1 без reply — переводим в режим ожидания скриншота
+            self.db.set_user_state(msg.chat_id, msg.user_id, "WAIT_ATTACH_SCREENSHOT", {"task_number": task_num})
+            buttons = [
+                [{"type": "callback", "text": "❌ Отмена", "payload": f"info:{task_num}"}]
+            ]
+            self.api.send_message(
+                msg.chat_id,
+                f"📷 Отправьте скриншот или фото для прикрепления к задаче #{task_num}:",
+                reply_to_id=msg.message_id,
+                buttons=buttons
+            )
+            return
+
+        updated_task = self.db.append_to_task(
+            chat_id=msg.chat_id,
+            task_number=task_num,
+            additional_text=additional_text,
+            additional_screenshots=screenshots
+        )
+
+        screens_str = f"🖼️ Прикреплено скриншотов: {len(screenshots)}\n" if screenshots else ""
+        text_str = "📝 Текст добавлен в описание задачи.\n" if additional_text else ""
+        reply = (
+            f"📎 **К задаче #{task_num} успешно добавлена информация!**\n\n"
+            f"📌 **{updated_task.title if updated_task else task.title}**\n"
+            f"{text_str}"
+            f"{screens_str}"
+        )
+        buttons = [
+            [
+                {"type": "callback", "text": f"🔍 Инфо #{task_num}", "payload": f"info:{task_num}"},
+                {"type": "callback", "text": f"✅ Выполнить #{task_num}", "payload": f"done:{task_num}"}
+            ],
+            [
+                {"type": "callback", "text": "📋 Список задач", "payload": "cmd:list"},
+                {"type": "callback", "text": "🏠 Главное меню", "payload": "cmd:menu"}
+            ]
+        ]
+        self.api.send_message(msg.chat_id, reply, reply_to_id=msg.message_id, buttons=buttons)
+
     def _handle_bulk_tasks_cmd(self, msg: IncomingMessage, raw_text: str):
-        text = raw_text if raw_text else (msg.reply_to_text or "")
-        if not text:
+        section = None
+        text_to_parse = raw_text
+        if raw_text:
+            m_sec = re.match(r"^\[([a-zA-Zа-яА-ЯёЁ0-9_\-\s]+)\]\s*(.*)$", raw_text)
+            if m_sec:
+                section = m_sec.group(1).strip()
+                text_to_parse = m_sec.group(2).strip()
+
+        if not text_to_parse and msg.reply_to_text:
+            text_to_parse = msg.reply_to_text
+
+        if not text_to_parse:
             self._btn_start_bulk_task(msg)
             return
-        self._process_state_bulk_text(msg, text, {"section": None, "mode": "__auto__"})
+        self._process_state_bulk_text(msg, text_to_parse, {"section": section, "mode": "__auto__"})
 
     def _handle_add_section_cmd(self, msg: IncomingMessage, arg_text: str):
         if not arg_text:
@@ -1207,26 +1387,35 @@ class TaskBot:
         self._btn_perform_delete_section(msg, arg_text.strip().strip("[]"))
 
     def _handle_mark_done_cmd(self, msg: IncomingMessage, arg_text: str):
+        task_num = None
         if arg_text.isdigit():
-            self._btn_mark_task_done(msg, int(arg_text))
+            task_num = int(arg_text)
+        elif msg.reply_to_text:
+            m_card = re.search(r"#(\d+)", msg.reply_to_text)
+            if m_card:
+                task_num = int(m_card.group(1))
+
+        if task_num:
+            self._btn_mark_task_done(msg, task_num)
         else:
             self.api.send_message(msg.chat_id, "⚠️ Укажите номер задачи. Пример: `/done 1`", reply_to_id=msg.message_id)
 
     def _handle_task_info_cmd(self, msg: IncomingMessage, arg_text: str):
+        task_num = None
         if arg_text.isdigit():
-            self._render_task_info(msg, int(arg_text))
+            task_num = int(arg_text)
+        elif msg.reply_to_text:
+            m_card = re.search(r"#(\d+)", msg.reply_to_text)
+            if m_card:
+                task_num = int(m_card.group(1))
+
+        if task_num:
+            self._render_task_info(msg, task_num)
         else:
             self.api.send_message(msg.chat_id, "⚠️ Укажите номер задачи. Пример: `/info 1`", reply_to_id=msg.message_id)
 
     def _handle_attach_cmd(self, msg: IncomingMessage, arg_text: str):
-        if not arg_text.isdigit():
-            self.api.send_message(msg.chat_id, "⚠️ Укажите номер задачи. Пример: `/attach 1`", reply_to_id=msg.message_id)
-            return
-        task_num = int(arg_text)
-        screenshots = list(msg.screenshots)
-        if msg.reply_to_screenshots:
-            screenshots.extend(msg.reply_to_screenshots)
-        self._process_state_attach(msg, screenshots, {"task_number": task_num})
+        self._handle_add_to_cmd(msg, arg_text)
 
     def _handle_clear_done_cmd(self, msg: IncomingMessage):
         self._btn_prompt_clear_done(msg)

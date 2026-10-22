@@ -34,6 +34,11 @@ class BaseDatabase:
     def attach_screenshots(self, chat_id: str, task_number: int, screenshots: List[str]) -> Optional[Task]:
         raise NotImplementedError
 
+    def append_to_task(self, chat_id: str, task_number: int,
+                       additional_text: Optional[str] = None,
+                       additional_screenshots: Optional[List[str]] = None) -> Optional[Task]:
+        raise NotImplementedError
+
     def delete_completed_tasks(self, chat_id: str) -> int:
         raise NotImplementedError
 
@@ -372,17 +377,33 @@ class SqliteDatabase(BaseDatabase):
             return task
 
     def attach_screenshots(self, chat_id: str, task_number: int, screenshots: List[str]) -> Optional[Task]:
+        return self.append_to_task(chat_id, task_number, additional_screenshots=screenshots)
+
+    def append_to_task(self, chat_id: str, task_number: int,
+                       additional_text: Optional[str] = None,
+                       additional_screenshots: Optional[List[str]] = None) -> Optional[Task]:
         with self._get_conn() as conn:
             task = self.get_task_by_number(chat_id, task_number)
             if not task:
                 return None
-            task.screenshots.extend(screenshots)
+
+            if additional_text and additional_text.strip():
+                if task.description:
+                    task.description = f"{task.description}\n\n---\n{additional_text.strip()}"
+                else:
+                    task.description = additional_text.strip()
+
+            if additional_screenshots:
+                for s in additional_screenshots:
+                    if s not in task.screenshots:
+                        task.screenshots.append(s)
+
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE tasks
-                SET screenshots_json = ?
+                SET description = ?, screenshots_json = ?
                 WHERE chat_id = ? AND task_number = ?
-            """, (task.screenshots_to_json(), chat_id, task_number))
+            """, (task.description, task.screenshots_to_json(), chat_id, task_number))
             conn.commit()
             return task
 
@@ -1047,27 +1068,44 @@ class YdbDatabase(BaseDatabase):
         return task
 
     def attach_screenshots(self, chat_id: str, task_number: int, screenshots: List[str]) -> Optional[Task]:
+        return self.append_to_task(chat_id, task_number, additional_screenshots=screenshots)
+
+    def append_to_task(self, chat_id: str, task_number: int,
+                       additional_text: Optional[str] = None,
+                       additional_screenshots: Optional[List[str]] = None) -> Optional[Task]:
         task = self.get_task_by_number(chat_id, task_number)
         if not task:
             return None
 
-        task.screenshots.extend(screenshots)
+        if additional_text and additional_text.strip():
+            if task.description:
+                task.description = f"{task.description}\n\n---\n{additional_text.strip()}"
+            else:
+                task.description = additional_text.strip()
+
+        if additional_screenshots:
+            for s in additional_screenshots:
+                if s not in task.screenshots:
+                    task.screenshots.append(s)
+
         pool = self._get_pool()
 
         def _callee(session):
-            query = """
+            query = f"""
                 DECLARE $chat_id AS Utf8;
                 DECLARE $task_number AS Uint64;
+                DECLARE $description AS Utf8;
                 DECLARE $screenshots_json AS Utf8;
 
-                UPDATE `tasks`
-                SET screenshots_json = $screenshots_json
+                UPDATE `{self._table('tasks')}`
+                SET description = $description, screenshots_json = $screenshots_json
                 WHERE chat_id = $chat_id AND task_number = $task_number;
             """
             prep = session.prepare(query)
             session.transaction().execute(prep, {
                 "$chat_id": chat_id,
                 "$task_number": task_number,
+                "$description": task.description,
                 "$screenshots_json": task.screenshots_to_json()
             }, commit_tx=True)
 

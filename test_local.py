@@ -282,7 +282,147 @@ def run_tests():
     assert db.get_user_state(chat_id, admin_id) is None
     print("✅ Кнопка отмены моментально сбрасывает режим ввода!")
 
-    print("\n🎉 Все тесты 100% кнопочного управления успешно пройдены!")
+    # ========================================================
+    # 9. ТЕСТ: Создание новой задачи через «Ответить на сообщение» (/task)
+    # ========================================================
+    print("\n9. Тест создания задачи через ответ на сообщение (/task)...")
+    bot.handle_message(IncomingMessage(
+        message_id="reply_msg_1", chat_id=chat_id, chat_type="group",
+        user_id=admin_id, user_name=admin_name,
+        text="/task",
+        reply_to_message_id="orig_msg_1",
+        reply_to_text="Не работает авторизация через Госуслуги на проде!\nКод ошибки 502 Bad Gateway",
+        reply_to_sender_name="Иван Петров",
+        reply_to_screenshots=["https://example.com/error_gosuslugi.png"],
+        is_admin=True
+    ))
+    # Создана новая задача (следующий номер после 51)
+    new_t = db.get_task_by_number(chat_id, 52)
+    assert new_t is not None, "Задача #52 должна быть создана"
+    assert new_t.title == "Не работает авторизация через Госуслуги на проде!"
+    assert "Иван Петров" in new_t.description
+    assert "Код ошибки 502" in new_t.description
+    assert "https://example.com/error_gosuslugi.png" in new_t.screenshots
+    print(f"✅ Задача #{new_t.task_number} успешно создана из ответа: '{new_t.title}'")
+
+    # ========================================================
+    # 10. ТЕСТ: Создание задачи через ответ с разделом и своим заголовком
+    # ========================================================
+    print("\n10. Тест создания задачи через ответ с кастомным заголовком и разделом...")
+    bot.handle_message(IncomingMessage(
+        message_id="reply_msg_2", chat_id=chat_id, chat_type="group",
+        user_id=admin_id, user_name=admin_name,
+        text="/task [Backend] Исправить 502 на Госуслугах",
+        reply_to_message_id="orig_msg_2",
+        reply_to_text="Логи сервера:\nTimeout during upstream connect",
+        reply_to_sender_name="Дмитрий",
+        is_admin=True
+    ))
+    t53 = db.get_task_by_number(chat_id, 53)
+    assert t53 is not None
+    assert t53.title == "Исправить 502 на Госуслугах"
+    assert t53.section == "Backend"
+    assert "Дмитрий" in t53.description
+    assert "Timeout during upstream connect" in t53.description
+    print(f"✅ Задача #{t53.task_number} с разделом [{t53.section}] и цитатой успешно создана!")
+
+    # ========================================================
+    # 11. ТЕСТ: Создание задачи через естественные фразы («в задачу», «+», «задача»)
+    # ========================================================
+    print("\n11. Тест создания задачи через естественную фразу 'в задачу'...")
+    bot.handle_message(IncomingMessage(
+        message_id="reply_msg_3", chat_id=chat_id, chat_type="group",
+        user_id=admin_id, user_name=admin_name,
+        text="в задачу",
+        reply_to_message_id="orig_msg_3",
+        reply_to_text="Обновить сертификаты SSL до конца недели",
+        reply_to_sender_name="Ольга",
+        is_admin=True
+    ))
+    t54 = db.get_task_by_number(chat_id, 54)
+    assert t54 is not None
+    assert t54.title == "Обновить сертификаты SSL до конца недели"
+    assert "Ольга" in t54.description
+    print(f"✅ Задача #{t54.task_number} успешно создана фразой 'в задачу'!")
+
+    # ========================================================
+    # 12. ТЕСТ: Добавление сообщения к СУЩЕСТВУЮЩЕЙ задаче (/attach 52 или /task 52)
+    # ========================================================
+    print("\n12. Тест добавления сообщения к существующей задаче #52...")
+    bot.handle_message(IncomingMessage(
+        message_id="reply_add_to_1", chat_id=chat_id, chat_type="group",
+        user_id=admin_id, user_name=admin_name,
+        text="/attach 52 Дополнительный дамп памяти",
+        reply_to_message_id="orig_msg_4",
+        reply_to_text="Стек вызовов в момент падения: memory leak at AuthGateway.java:104",
+        reply_to_sender_name="Тестировщик",
+        reply_to_screenshots=["https://example.com/dump_graph.png"],
+        is_admin=True
+    ))
+    t52_updated = db.get_task_by_number(chat_id, 52)
+    assert "Дополнительный дамп памяти" in t52_updated.description
+    assert "memory leak at AuthGateway.java:104" in t52_updated.description
+    assert "https://example.com/dump_graph.png" in t52_updated.screenshots
+    # Теперь у задачи #52 должно быть 2 скриншота
+    assert len(t52_updated.screenshots) == 2
+    print(f"✅ В задачу #52 успешно добавлен текст и второй скриншот (всего: {len(t52_updated.screenshots)})!")
+
+    # Также проверяем через естественную фразу "в задачу 52"
+    bot.handle_message(IncomingMessage(
+        message_id="reply_add_to_2", chat_id=chat_id, chat_type="group",
+        user_id=admin_id, user_name=admin_name,
+        text="в задачу 52",
+        reply_to_message_id="orig_msg_5",
+        reply_to_text="Патч от вендора уже готов, можно тестировать",
+        reply_to_sender_name="Вендор",
+        is_admin=True
+    ))
+    t52_updated2 = db.get_task_by_number(chat_id, 52)
+    assert "Патч от вендора" in t52_updated2.description
+    print("✅ Дополнение через 'в задачу 52' успешно сохранено в описании задачи!")
+
+    # ========================================================
+    # 13. ТЕСТ: Массовое добавление по ответу на чек-лист (/bulk)
+    # ========================================================
+    print("\n13. Тест массового импорта по ответу на сообщение с чек-листом (/bulk)...")
+    checklist_text = (
+        "1. Проверить миграции БД\n"
+        "2. Перезапустить воркеры Celery\n"
+        "3. Сбросить кэш Redis"
+    )
+    bot.handle_message(IncomingMessage(
+        message_id="reply_bulk", chat_id=chat_id, chat_type="group",
+        user_id=admin_id, user_name=admin_name,
+        text="/bulk [Backend]",
+        reply_to_message_id="orig_bulk",
+        reply_to_text=checklist_text,
+        is_admin=True
+    ))
+    t55 = db.get_task_by_number(chat_id, 55)
+    t56 = db.get_task_by_number(chat_id, 56)
+    t57 = db.get_task_by_number(chat_id, 57)
+    assert t55 and t55.title == "Проверить миграции БД" and t55.section == "Backend"
+    assert t56 and t56.title == "Перезапустить воркеры Celery" and t56.section == "Backend"
+    assert t57 and t57.title == "Сбросить кэш Redis" and t57.section == "Backend"
+    print("✅ Чек-лист из цитируемого сообщения успешно импортирован в раздел [Backend]!")
+
+    # ========================================================
+    # 14. ТЕСТ: Отметка выполнения ответом /done на карточку задачи
+    # ========================================================
+    print("\n14. Тест выполнения задачи ответом /done на карточку задачи...")
+    bot.handle_message(IncomingMessage(
+        message_id="reply_done", chat_id=chat_id, chat_type="group",
+        user_id=admin_id, user_name=admin_name,
+        text="/done",
+        reply_to_message_id="card_msg",
+        reply_to_text="📌 **Задача #55**\nСтатус: 🟢 Открыта\nРаздел: Backend\nОписание: Проверить миграции БД",
+        is_admin=True
+    ))
+    t55_done = db.get_task_by_number(chat_id, 55)
+    assert t55_done.status == "DONE"
+    print(f"✅ Задача #55 успешно завершена ответом /done на карточку!")
+
+    print("\n🎉 ВСЕ ТЕСТЫ (включая работу через ответы на сообщения) УСПЕШНО ПРОЙДЕНЫ!")
 
 if __name__ == "__main__":
     run_tests()
